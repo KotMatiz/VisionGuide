@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootStart"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#000000"
+    android:padding="16dp">
+
+    <!-- Сверху: красная ПОМОЩЬ -->
+    <Button
+        android:id="@+id/btnStartHelp"
+        android:layout_width="match_parent"
+        android:layout_height="72dp"
+        android:text="ПОМОЩЬ"
+        android:textAllCaps="true"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:backgroundTint="#F44336"
+        android:textColor="#FFFFFF"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Все остальные по центру экрана -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:gravity="center_horizontal">
+
+        <!-- Зелёная НАЧАТЬ по центру -->
+        <Button
+            android:id="@+id/btnStart"
+            android:layout_width="match_parent"
+            android:layout_height="96dp"
+            android:text="НАЧАТЬ"
+            android:textAllCaps="true"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:backgroundTint="#4CAF50"
+            android:textColor="#000000"
+            android:layout_marginBottom="24dp" />
+
+        <!-- Жёлтая ГОЛОС ниже -->
+        <Button
+            android:id="@+id/btnVoice"
+            android:layout_width="match_parent"
+            android:layout_height="80dp"
+            android:text="ГОЛОС"
+            android:textAllCaps="true"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:backgroundTint="#FFEB3B"
+            android:textColor="#000000" />
+
+    </LinearLayout>
+
+</LinearLayout>

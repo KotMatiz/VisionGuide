@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootMode"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:padding="16dp">
+
+    <!-- Сверху: красная ПОМОЩЬ -->
+    <Button
+        android:id="@+id/btnModeHelp"
+        android:layout_width="match_parent"
+        android:layout_height="72dp"
+        android:text="ПОМОЩЬ"
+        android:textAllCaps="true"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:backgroundTint="#F44336"
+        android:textColor="#FFFFFF"
+        android:layout_alignParentTop="true"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Центр: блок с Улица / Помещение / Голос -->
+    <LinearLayout
+        android:id="@+id/centerButtons"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center_horizontal"
+        android:layout_centerInParent="true">
+
+        <!-- УЛИЦА (чуть выше центра блока) -->
+        <Button
+            android:id="@+id/btnOutdoor"
+            android:layout_width="match_parent"
+            android:layout_height="88dp"
+            android:text="УЛИЦА"
+            android:textAllCaps="true"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:backgroundTint="#03A9F4"
+            android:textColor="#000000"
+            android:layout_marginBottom="24dp" />
+
+        <!-- ПОМЕЩЕНИЕ (фиолетовая) -->
+        <Button
+            android:id="@+id/btnIndoor"
+            android:layout_width="match_parent"
+            android:layout_height="88dp"
+            android:text="ПОМЕЩЕНИЕ"
+            android:textAllCaps="true"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:backgroundTint="#9C27B0"
+            android:textColor="#FFFFFF"
+            android:layout_marginBottom="24dp" />
+
+        <!-- ГОЛОС (жёлтая) -->
+        <Button
+            android:id="@+id/btnModeVoice"
+            android:layout_width="match_parent"
+            android:layout_height="80dp"
+            android:text="ГОЛОС"
+            android:textAllCaps="true"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:backgroundTint="#FFEB3B"
+            android:textColor="#000000" />
+
+    </LinearLayout>
+
+</RelativeLayout>

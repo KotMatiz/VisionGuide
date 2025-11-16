@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Разрешаем HTTP к нашему серверу по IP -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain>195.209.210.250</domain>
+    </domain-config>
+
+    <!-- На всякий случай общий флаг -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
