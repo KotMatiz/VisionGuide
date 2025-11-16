@@ -43,7 +43,7 @@ FREE_LABELS = {
     "runway",
 }
 
-# YOLO: какие классы нам интересны (остальные можно игнорить)
+# YOLO: какие классы нам интересны (остальные игнорим)
 YOLO_CLASSES_WHITELIST = {
     "person",
     "bicycle",
@@ -64,7 +64,6 @@ YOLO_CLASSES_WHITELIST = {
     "parking meter",
     "potted plant",
     "refrigerator",
-    "chair",
 }
 
 # Простая мапа английский → русский для озвучки
@@ -112,13 +111,13 @@ seg_id2label = seg_model.config.id2label
 
 print("[init] Loading ZoeDepth...")
 depth_processor = AutoImageProcessor.from_pretrained("Intel/zoedepth-nyu-kitti")
-depth_model = AutoModelForDepthEstimation.from_pretrained("Intel/zoedepth-nyu-kitti").to(
-    DEVICE
-)
+depth_model = AutoModelForDepthEstimation.from_pretrained(
+    "Intel/zoedepth-nyu-kitti"
+).to(DEVICE)
 depth_model.eval()
 
 print("[init] Loading YOLOv8x (COCO)...")
-yolo_model = YOLO("yolov8x.pt")  # самая мощная из стандартных v8
+yolo_model = YOLO("yolov8x.pt")
 yolo_model.to(DEVICE)
 
 
@@ -127,6 +126,7 @@ yolo_model.to(DEVICE)
 # ----------------------------
 
 def current_ts_for_filename() -> str:
+    # Да, deprecated, но для нас ок
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")[:-3]
     return ts
 
@@ -149,11 +149,13 @@ def run_zoedepth(image_pil: Image.Image) -> np.ndarray:
     with torch.no_grad():
         outputs = depth_model(**inputs)
 
+    # В разных версиях HF либо outputs.predicted_depth, либо просто тензор
     if hasattr(outputs, "predicted_depth"):
         depth = outputs.predicted_depth
     else:
         depth = outputs
 
+    # Приводим к (H, W)
     if depth.ndim == 4:
         depth = depth[0, 0]
     elif depth.ndim == 3:
@@ -162,7 +164,8 @@ def run_zoedepth(image_pil: Image.Image) -> np.ndarray:
         depth = depth.squeeze()
 
     orig_w, orig_h = image_pil.size
-    depth = depth.unsqueeze(0).unsqueeze(0)  # (1,1,h,w)
+    depth = depth.unsqueeze(0).unsqueeze(0)  # (1, 1, h, w)
+
     depth_resized = F.interpolate(
         depth,
         size=(orig_h, orig_w),
@@ -173,7 +176,7 @@ def run_zoedepth(image_pil: Image.Image) -> np.ndarray:
     depth_np = depth_resized.detach().cpu().numpy().astype("float32")
 
     t1 = time.time()
-    app.logger.info("[depth] zoedepth forward+postprocess %.3f s", t1 - t0)
+    app.logger.info("[depth] zoedepth forward+resize %.3f s", t1 - t0)
 
     return depth_np
 
@@ -215,7 +218,9 @@ def run_segformer(image_pil: Image.Image) -> tuple[np.ndarray, float, float, int
     free_count = 0
     obs_count = 0
 
-    for class_id in np.unique(seg):
+    # грубая оценка свободного/занятого пространства
+    unique_ids = np.unique(seg)
+    for class_id in unique_ids:
         label = seg_id2label.get(int(class_id), "")
         mask = (seg == class_id)
         cnt = int(mask.sum())
@@ -248,6 +253,9 @@ def estimate_distance_from_depth(depth: np.ndarray, bbox) -> float | None:
     bbox: [x1, y1, x2, y2]
     Возвращаем медиану глубины внутри бокса.
     """
+    if depth is None:
+        return None
+
     h, w = depth.shape
     x1, y1, x2, y2 = [int(round(v)) for v in bbox]
     x1 = max(0, min(w - 1, x1))
@@ -282,12 +290,12 @@ def run_yolo(image_pil: Image.Image, depth: np.ndarray):
     num_boxes = boxes.xyxy.shape[0] if boxes is not None else 0
     app.logger.info("[yolo] forward %.3f s, boxes=%d", t1 - t0, num_boxes)
 
-    h, w = depth.shape
-    objects = []
-
     if boxes is None or num_boxes == 0:
         app.logger.info("[yolo] filtered objects: 0")
-        return objects, t1 - t0
+        return [], t1 - t0
+
+    h, w = depth.shape
+    objects: list[dict] = []
 
     for b in boxes:
         conf = float(b.conf.item())
@@ -316,7 +324,12 @@ def run_yolo(image_pil: Image.Image, depth: np.ndarray):
                 "direction": direction,
                 "distance_m": dist,
                 "fraction": frac,
-                "bbox": [int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2))],
+                "bbox": [
+                    int(round(x1)),
+                    int(round(y1)),
+                    int(round(x2)),
+                    int(round(y2)),
+                ],
                 "confidence": conf,
                 "source": "yolo",
             }
@@ -344,7 +357,7 @@ def build_speech_text(has_obstacles, objects, mode: str) -> str:
         d = obj.get("distance_m")
         if d is None or d <= 0:
             continue
-        if nearest is None or d < nearest.get("distance_m", 9999):
+        if nearest is None or d < nearest.get("distance_m", 1e9):
             nearest = obj
 
     if nearest is None:
@@ -383,20 +396,69 @@ def build_speech_text(has_obstacles, objects, mode: str) -> str:
     return phrase
 
 
-def save_debug_image(
+def depth_to_debug_image(depth: np.ndarray) -> Image.Image:
+    """
+    Простейшая псевдоцветная/градационная визуализация глубины.
+    Чем ближе — тем ярче.
+    """
+    h, w = depth.shape
+    depth = np.array(depth, copy=True)
+
+    valid = np.isfinite(depth) & (depth > 0)
+    if not np.any(valid):
+        # просто чёрное изображение
+        return Image.new("RGB", (w, h), (0, 0, 0))
+
+    vmin = float(np.percentile(depth[valid], 5))
+    vmax = float(np.percentile(depth[valid], 95))
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
+
+    depth_clipped = np.clip(depth, vmin, vmax)
+    norm = (depth_clipped - vmin) / (vmax - vmin)
+
+    # ближе -> ярче
+    norm = 1.0 - norm
+    norm = np.clip(norm, 0.0, 1.0)
+    img_gray = (norm * 255.0).astype("uint8")
+
+    img = Image.fromarray(img_gray, mode="L").convert("RGB")
+
+    # подпишем, что это depth
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 18)
+    except Exception:
+        font = ImageFont.load_default()
+    text = "Depth map"
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+    draw.rectangle([0, 0, tw + 10, th + 10], fill=(0, 0, 0))
+    draw.text((5, 5), text, font=font, fill=(255, 255, 255))
+
+    return img
+
+
+def save_debug_images(
     img: Image.Image,
     depth: np.ndarray | None,
     objects: list[dict],
     free_frac: float,
     obs_frac: float,
     mode: str,
-) -> str:
+) -> tuple[str, str | None]:
     """
-    Сохраняем debug-картинку с боксами и текстом, возвращаем имя файла.
+    Сохраняем две debug-картинки:
+      - debug_<ts>_yolo.jpg  (оригинал + боксы + инфо)
+      - debug_<ts>_depth.jpg (визуализация глубины)
+    Возвращаем (yolo_filename, depth_filename_or_None)
     """
+    ts = current_ts_for_filename()
 
-    img = img.convert("RGB")
-    draw = ImageDraw.Draw(img)
+    # --- YOLO debug image ---
+    img_yolo = img.convert("RGB")
+    draw = ImageDraw.Draw(img_yolo)
 
     # Боксы YOLO
     for obj in objects:
@@ -429,6 +491,7 @@ def save_debug_image(
         draw.rectangle([tx, ty, tx + tw + 4, ty + th + 4], fill=(0, 0, 0))
         draw.text((tx + 2, ty + 2), text, font=font, fill=(255, 255, 255))
 
+    # Общая инфа
     info_lines = [
         f"mode: {mode}",
         f"free: {free_frac:.3f}",
@@ -441,22 +504,46 @@ def save_debug_image(
     except Exception:
         font_info = ImageFont.load_default()
 
-    info_bbox = draw.multiline_textbbox((0, 0), info_text, font=font_info)
+    info_bbox = ImageDraw.Draw(img_yolo).multiline_textbbox((0, 0), info_text, font=font_info)
     iw = info_bbox[2] - info_bbox[0]
     ih = info_bbox[3] - info_bbox[1]
 
     draw.rectangle([0, 0, iw + 10, ih + 10], fill=(0, 0, 0, 160))
     draw.multiline_text((5, 5), info_text, font=font_info, fill=(255, 255, 255))
 
-    filename = f"debug_{current_ts_for_filename()}.jpg"
-    path = os.path.join(DEBUG_DIR, filename)
-    img.save(path, "JPEG", quality=90)
+    yolo_filename = f"debug_{ts}_yolo.jpg"
+    yolo_path = os.path.join(DEBUG_DIR, yolo_filename)
+    img_yolo.save(yolo_path, "JPEG", quality=90)
 
-    return filename
+    # --- Depth debug image ---
+    depth_filename = None
+    if depth is not None:
+        depth_img = depth_to_debug_image(depth)
+        depth_draw = ImageDraw.Draw(depth_img)
+        try:
+            font_info2 = ImageFont.truetype("DejaVuSans.ttf", 18)
+        except Exception:
+            font_info2 = ImageFont.load_default()
+        info2 = f"mode: {mode}\nfree: {free_frac:.3f}\nobs: {obs_frac:.3f}"
+        bbox2 = depth_draw.multiline_textbbox((0, 0), info2, font=font_info2)
+        iw2 = bbox2[2] - bbox2[0]
+        ih2 = bbox2[3] - bbox2[1]
+        depth_draw.rectangle([0, 0, iw2 + 10, ih2 + 10], fill=(0, 0, 0, 160))
+        depth_draw.multiline_text((5, 5), info2, font=font_info2, fill=(255, 255, 255))
+
+        depth_filename = f"debug_{ts}_depth.jpg"
+        depth_path = os.path.join(DEBUG_DIR, depth_filename)
+        depth_img.save(depth_path, "JPEG", quality=90)
+
+    return yolo_filename, depth_filename
 
 
-def get_last_debug_image() -> str | None:
-    files = [f for f in os.listdir(DEBUG_DIR) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+def get_last_debug_yolo_image() -> str | None:
+    files = [
+        f
+        for f in os.listdir(DEBUG_DIR)
+        if f.lower().endswith("_yolo.jpg") and f.startswith("debug_")
+    ]
     if not files:
         return None
     files.sort()
@@ -476,20 +563,20 @@ def analyze():
     debug_flag = request.args.get("debug", "0") in ("1", "true", "True")
 
     t0 = time.time()
-    raw = request.get_data()  # что реально пришло в body
+    raw = request.get_data()
     t1 = time.time()
 
     image = None
     image_bytes_for_log = raw
 
-    # 1) Попытка: сырые байты — сразу картинка (как раньше)
+    # 1) Пробуем как "сырые байты" (как раньше)
     if raw:
         try:
             image = Image.open(io.BytesIO(raw))
         except Exception:
             image = None
 
-    # 2) Если нет — пробуем multipart (request.files)
+    # 2) multipart/form-data
     if image is None and request.files:
         try:
             f = next(iter(request.files.values()))
@@ -499,7 +586,7 @@ def analyze():
         except Exception:
             image = None
 
-    # 3) Если всё ещё нет — пробуем JSON с base64
+    # 3) JSON с base64
     if image is None and raw:
         try:
             text = raw.decode("utf-8", errors="ignore")
@@ -529,6 +616,7 @@ def analyze():
         len(image_bytes_for_log) if image_bytes_for_log is not None else 0,
         t1 - t0,
         t1 - t_start,
+        # total_time мы логируем позже
     )
 
     # --- Depth ---
@@ -543,9 +631,10 @@ def analyze():
     all_objects = yolo_objects
 
     # --- Debug ---
-    debug_filename = None
+    debug_yolo_filename = None
+    debug_depth_filename = None
     if debug_flag:
-        debug_filename = save_debug_image(
+        debug_yolo_filename, debug_depth_filename = save_debug_images(
             image.copy(),
             depth,
             all_objects,
@@ -576,15 +665,19 @@ def analyze():
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
-    if debug_flag and debug_filename is not None:
-        result["debug_image"] = debug_filename
+    if debug_flag and debug_yolo_filename is not None:
+        # для приложения: одно название, как раньше
+        result["debug_image"] = debug_yolo_filename
 
     return jsonify(result)
 
 
 @app.route("/debug_last")
 def debug_last():
-    last = get_last_debug_image()
+    """
+    Старый эндпоинт — возвращаем последнюю YOLO-картинку.
+    """
+    last = get_last_debug_yolo_image()
     if last is None:
         return "No debug images yet", 404
     return send_from_directory(DEBUG_DIR, last)
@@ -598,5 +691,117 @@ def debug_file(filename):
     return send_from_directory(DEBUG_DIR, filename)
 
 
+@app.route("/debug")
+def debug_page():
+    """
+    Новая страница:
+      - показывает последние 50 наборов картинок
+      - у каждого набора: слева YOLO, справа depth (если есть)
+    """
+    files = [
+        f
+        for f in os.listdir(DEBUG_DIR)
+        if f.lower().endswith("_yolo.jpg") and f.startswith("debug_")
+    ]
+    if not files:
+        return "<h1>No debug images yet</h1>", 200
+
+    files.sort()  # по имени → по времени
+    files = files[-50:]  # последние 50
+
+    items_html = []
+    for fname in reversed(files):  # новые сверху
+        # fname = "debug_<ts>_yolo.jpg"
+        ts = fname[len("debug_") : -len("_yolo.jpg")]
+        yolo_name = fname
+        depth_name = f"debug_{ts}_depth.jpg"
+        depth_exists = os.path.isfile(os.path.join(DEBUG_DIR, depth_name))
+        ts_display = ts
+
+        row = [
+            '<div class="item">',
+            f'<div class="meta">debug id: {ts_display}</div>',
+            '<div class="imgs">',
+            f'<div class="img-block"><div class="label">YOLO</div><img src="/debug_file/'
+            f'{yolo_name}" loading="lazy"></div>',
+        ]
+        if depth_exists:
+            row.append(
+                f'<div class="img-block"><div class="label">Depth</div>'
+                f'<img src="/debug_file/{depth_name}" loading="lazy"></div>'
+            )
+        row.append("</div></div>")
+        items_html.append("\n".join(row))
+
+    html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>VisionGuide Debug</title>
+  <style>
+    body {{
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #111;
+      color: #eee;
+      margin: 0;
+      padding: 0;
+    }}
+    h1 {{
+      text-align: center;
+      padding: 16px;
+      margin: 0;
+      background: #181818;
+      border-bottom: 1px solid #333;
+    }}
+    .container {{
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }}
+    .item {{
+      background: #181818;
+      border-radius: 8px;
+      padding: 12px;
+      border: 1px solid #333;
+    }}
+    .meta {{
+      font-size: 12px;
+      color: #aaa;
+      margin-bottom: 8px;
+    }}
+    .imgs {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }}
+    .img-block {{
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }}
+    .img-block .label {{
+      font-size: 13px;
+      color: #ccc;
+    }}
+    img {{
+      max-width: 360px;
+      border-radius: 6px;
+      border: 1px solid #444;
+    }}
+  </style>
+</head>
+<body>
+  <h1>VisionGuide Debug (last {len(files)} frames)</h1>
+  <div class="container">
+    {''.join(items_html)}
+  </div>
+</body>
+</html>
+"""
+    return html
+
+
 if __name__ == "__main__":
+    # Для локального запуска; на сервере у тебя systemd + start_server.sh
     app.run(host="0.0.0.0", port=8000)
